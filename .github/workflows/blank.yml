@@ -1,0 +1,31 @@
+name: Build Anbargardani APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find the Gradle project folder
+        id: proj
+        run: |
+          f=$(find . -name settings.gradle.kts | head -n 1)
+          if [ -z "$f" ]; then echo "settings.gradle.kts not found in the repository"; exit 1; fi
+          echo "dir=$(dirname "$f")" >> "$GITHUB_OUTPUT"
+          echo "Gradle project: $(dirname "$f")"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+          build-root-directory: ${{ steps.proj.outputs.dir }}
+      - name: Build debug APK
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Anbargardani-debug-apk
+          path: ${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/*.apk
