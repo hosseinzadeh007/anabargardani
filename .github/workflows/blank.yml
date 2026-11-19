@@ -7,6 +7,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Unzip the project if a .zip file was uploaded instead of the files
+        run: |
+          if [ -z "$(find . -name settings.gradle.kts | head -n 1)" ]; then
+            z=$(find . -iname '*.zip' | head -n 1)
+            if [ -n "$z" ]; then echo "Unzipping $z"; unzip -q "$z" -d _project; fi
+          fi
       - name: Find the Gradle project folder
         id: proj
         run: |
