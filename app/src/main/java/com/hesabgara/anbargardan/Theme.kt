@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -280,13 +282,17 @@ fun SearchField(value: String, onChange: (String) -> Unit, hint: String, onScan:
 }
 
 @Composable
-fun AppField(value: String, onChange: (String) -> Unit, label: String? = null, hint: String = "", modifier: Modifier = Modifier) {
+fun AppField(
+    value: String, onChange: (String) -> Unit, label: String? = null, hint: String = "", modifier: Modifier = Modifier,
+    keyboardType: KeyboardType = KeyboardType.Text
+) {
     val t = LocalTk.current
     val shape = RoundedCornerShape(14.dp)
     Column(modifier) {
         if (label != null) Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = t.mut, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
         BasicTextField(
             value = value, onValueChange = onChange, singleLine = true, textStyle = TextStyle(fontSize = 14.sp, color = t.ink), cursorBrush = SolidColor(t.pri),
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
             modifier = Modifier.fillMaxWidth().height(48.dp),
             decorationBox = { inner ->
                 Box(Modifier.fillMaxSize().clip(shape).background(t.s).border(1.5.dp, t.line, shape).padding(horizontal = 14.dp), contentAlignment = Alignment.CenterStart) {

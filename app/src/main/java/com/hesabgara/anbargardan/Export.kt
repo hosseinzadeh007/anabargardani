@@ -27,10 +27,10 @@ object Export {
 
     private fun makeXlsx(ctx: Context, rows: List<Rep>): File {
         val data = ArrayList<List<Any?>>()
-        data.add(listOf("کد کالا", "نام کالا", "شکل دارویی", "دسته", "موجودی سیستم", "شمارش اول", "شمارش مجدد", "موجودی نهایی", "مغایرت", "وضعیت"))
+        data.add(listOf("کد کالا", "بارکد", "نام کالا", "شکل دارویی", "دسته", "موجودی سیستم", "شمارش اول", "شمارش مجدد", "موجودی نهایی", "مغایرت", "وضعیت"))
         rows.forEach { r ->
             val i = r.item
-            data.add(listOf(i.code, i.name, i.form, i.category, i.system, i.first, i.second, r.qty, r.diff, status(r.diff)))
+            data.add(listOf(i.code, i.barcodes.joinToString("، "), i.name, i.form, i.category, i.system, i.first, i.second, r.qty, r.diff, status(r.diff)))
         }
         val f = File(dir(ctx), "anbargardani_report.xlsx")
         f.outputStream().use { Excel.write(it, data) }
@@ -42,7 +42,7 @@ object Export {
         val body = rows.map { r ->
             val i = r.item
             listOf(
-                LRM + i.code, i.name + (if (i.form.isNotEmpty()) " (${i.form})" else ""), LRM + faN(i.system),
+                LRM + i.code.ifEmpty { i.barcodes.firstOrNull() ?: "" }, i.name + (if (i.form.isNotEmpty()) " (${i.form})" else ""), LRM + faN(i.system),
                 LRM + (i.first?.let { faN(it) } ?: "-"), LRM + (i.second?.let { faN(it) } ?: "-"),
                 LRM + (if (r.diff > 0) "+" else "") + faN(r.diff), status(r.diff)
             ) to kind(r.diff)

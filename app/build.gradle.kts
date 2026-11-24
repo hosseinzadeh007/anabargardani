@@ -10,10 +10,30 @@ android {
         applicationId = "com.hesabgara.anbargardan"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
     }
     buildFeatures { compose = true }
+    // One fixed key for every build, so a new APK installs over the old one (in-app updates keep user data).
+    signingConfigs {
+        create("app") {
+            storeFile = file("anbargardani.jks")
+            storePassword = "anbargardani1405"
+            keyAlias = "anbargardani"
+            keyPassword = "anbargardani1405"
+        }
+    }
+    buildTypes {
+        debug { signingConfig = signingConfigs.getByName("app") }
+        release {
+            signingConfig = signingConfigs.getByName("app")
+            isMinifyEnabled = false
+        }
+    }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

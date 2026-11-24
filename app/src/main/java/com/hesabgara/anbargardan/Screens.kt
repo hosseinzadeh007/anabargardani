@@ -82,7 +82,7 @@ fun ImportScreen(store: Store, onBack: () -> Unit) {
 
 /* ------------------------------------------------------------------ entry */
 @Composable
-fun EntryScreen(store: Store, key: String, scanned: Boolean, onBack: () -> Unit, onSaved: () -> Unit) {
+fun EntryScreen(store: Store, key: String, scanned: Boolean, onBack: () -> Unit, onSaved: () -> Unit, onEdit: () -> Unit) {
     val ctx = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val t = LocalTk.current
@@ -90,7 +90,6 @@ fun EntryScreen(store: Store, key: String, scanned: Boolean, onBack: () -> Unit,
     if (item == null) { LaunchedEffect(Unit) { onBack() }; return }
     var recount by remember(key) { mutableStateOf(item.second != null) }
     var text by remember(key) { mutableStateOf((if (item.second != null) item.second else item.first)?.let { fmt(it) } ?: "") }
-    var details by remember { mutableStateOf(false) }
     val v = num(text)
     val diff = v?.minus(item.system)
     val fr = remember { FocusRequester() }
@@ -99,7 +98,7 @@ fun EntryScreen(store: Store, key: String, scanned: Boolean, onBack: () -> Unit,
     fun bump(d: Double) { text = fmt(((num(text) ?: 0.0) + d).coerceAtLeast(0.0)) }
 
     Column(Modifier.fillMaxSize()) {
-        AppBar("ثبت موجودی", onBack = onBack, actions = { IconBtn(Icons.Outlined.Sell, { details = true }) })
+        AppBar("ثبت موجودی", onBack = onBack, actions = { IconBtn(Icons.Outlined.Edit, onEdit) })
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Panel {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -111,6 +110,9 @@ fun EntryScreen(store: Store, key: String, scanned: Boolean, onBack: () -> Unit,
                             listOfNotNull(item.code.takeIf { it.isNotEmpty() }?.let { fa(it) }, item.form.takeIf { it.isNotEmpty() }, item.category.takeIf { it.isNotEmpty() }).joinToString(" · "),
                             fontSize = 12.sp, color = t.mut
                         )
+                        if (item.barcodes.isNotEmpty()) {
+                            Text("بارکد: " + item.barcodes.joinToString("، ") { "\u200E$it" }, fontSize = 11.sp, color = t.mut)
+                        }
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         Text("موجودی سیستم", fontSize = 11.sp, color = t.mut)
@@ -157,18 +159,6 @@ fun EntryScreen(store: Store, key: String, scanned: Boolean, onBack: () -> Unit,
                 onSaved()
             }, icon = Icons.Outlined.Check)
             Spacer(Modifier.height(16.dp))
-        }
-    }
-    if (details) {
-        val live = store.items.firstOrNull { it.key == key } ?: item
-        Sheet({ details = false }, "دسته و شکل دارویی") {
-            SelectField("دسته", live.category.ifEmpty { "بدون دسته" }, store.categories.toList(), "بدون دسته") { i ->
-                store.setCategory(key, if (i < 0) "" else store.categories[i])
-            }
-            SelectField("شکل دارویی", live.form.ifEmpty { "بدون شکل" }, store.forms.toList(), "بدون شکل") { i ->
-                store.setForm(key, if (i < 0) "" else store.forms[i])
-            }
-            PrimaryButton("تأیید", { details = false })
         }
     }
 }

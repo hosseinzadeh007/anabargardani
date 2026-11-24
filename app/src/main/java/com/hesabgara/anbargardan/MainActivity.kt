@@ -3,6 +3,8 @@ package com.hesabgara.anbargardan
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -106,9 +108,27 @@ fun App(store: Store, onScan: ((String) -> Unit) -> Unit) {
     var sort by remember { mutableIntStateOf(0) }
     var mode by remember { mutableIntStateOf(0) }
     var zero by remember { mutableStateOf(false) }
+    var editor by remember { mutableStateOf<Editing?>(null) }
     BackHandler(sub != null) { sub = if (sub is Sub.PeriodView) Sub.History else null }
     BackHandler(sub == null && tab != Tab.Home) { tab = Tab.Home }
     val rep = buildReport(store, cat, form, zero, mode)
+    val main = remember { Handler(Looper.getMainLooper()) }
+    var update by remember { mutableStateOf<UpdateInfo?>(null) }
+    var showUpdate by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        Thread { val r = Updater.check(ctx); r.first?.let { i -> main.post { update = i } } }.start()
+    }
+    val checkUpdate: () -> Unit = {
+        Toast.makeText(ctx, "در حال بررسی…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val r = Updater.check(ctx)
+            main.post {
+                val i = r.first
+                if (i != null) { update = i; showUpdate = true }
+                else Toast.makeText(ctx, r.second ?: "نسخه‌ی شما به‌روز است", Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
 
     fun scanAndOpen() = onScan { raw ->
         val hit = store.findByCode(raw)
@@ -139,18 +159,18 @@ fun App(store: Store, onScan: ((String) -> Unit) -> Unit) {
                         is Sub.PeriodView -> store.periods.firstOrNull { it.id == s.id }?.let { p -> PeriodScreen(store, p) { sub = Sub.History } }
                         is Sub.Send -> SendScreen(store, onScan) { sub = null }
                         is Sub.Receive -> ReceiveScreen(store) { sub = null }
-                        is Sub.Entry -> EntryScreen(store, s.key, s.scanned, { sub = null }) { sub = null; if (s.scanned) scanAndOpen() }
+                        is Sub.Entry -> EntryScreen(store, s.key, s.scanned, { sub = null }, { sub = null; if (s.scanned) scanAndOpen() }) { editor = Editing(s.key) }
                         null -> when (tb) {
                             Tab.Home -> HomeScreen(
                                 store, pcats, { sub = Sub.Progress }, { sub = Sub.Import }, { sub = Sub.Export },
-                                { sub = Sub.Send }, { sub = Sub.History }, goAction
+                                { sub = Sub.Send }, { sub = Sub.History }, goAction, update, { showUpdate = true }, { editor = Editing(null) }
                             )
                             Tab.Items -> ItemsScreen(
                                 store, q, { q = it }, status, { status = it }, sort, { sort = it },
-                                cat, { cat = it }, form, { form = it }, { scanAndOpen() }
+                                cat, { cat = it }, form, { form = it }, { scanAndOpen() }, { editor = Editing(null) }
                             ) { sub = Sub.Entry(it) }
                             Tab.Report -> ReportScreen(store, rep, cat, { cat = it }, form, { form = it }, mode, { mode = it }, zero, { zero = it }) { sub = Sub.Export }
-                            Tab.Settings -> SettingsScreen(store, { sub = Sub.History }, { sub = Sub.Send }, { sub = Sub.Receive }, { sub = Sub.Import })
+                            Tab.Settings -> SettingsScreen(store, { sub = Sub.History }, { sub = Sub.Send }, { sub = Sub.Receive }, { sub = Sub.Import }, checkUpdate, { editor = Editing(null) })
                         }
                     }
                 }
@@ -165,6 +185,8 @@ fun App(store: Store, onScan: ((String) -> Unit) -> Unit) {
                     }
                 }
             }
+            update?.let { u -> if (showUpdate) UpdateDialog(u) { showUpdate = false } }
+            editor?.let { e -> ItemEditorSheet(store, e.key, onScan, { editor = null }) { if (sub is Sub.Entry) sub = null } }
             if (sub == null) {
                 BottomNav(
                     listOf(
@@ -195,7 +217,7 @@ private fun QuickTile(modifier: Modifier, icon: ImageVector, label: String, tone
 @Composable
 fun HomeScreen(
     store: Store, pcats: Set<String>, goProgress: () -> Unit, goImport: () -> Unit, goExport: () -> Unit,
-    goTransfer: () -> Unit, goHistory: () -> Unit, goAction: (String) -> Unit
+    goTransfer: () -> Unit, goHistory: () -> Unit, goAction: (String) -> Unit, update: UpdateInfo?, onUpdate: () -> Unit, goAdd: () -> Unit
 ) {
     val t = LocalTk.current
     val all = store.items
@@ -211,6 +233,19 @@ fun HomeScreen(
     Column(Modifier.fillMaxSize()) {
         AppBar("انبارگردانی", subtitle = "${store.warehouse} · ${Jalali.monthYear()}", logo = true, actions = { IconBtn(Icons.Outlined.History, goHistory) })
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (update != null) {
+                Panel(onClick = onUpdate) {
+                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconBubble(Icons.Outlined.SystemUpdate, Tone.Ok)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("نسخه‌ی جدید ${fa(update.version)} موجود است", fontWeight = FontWeight.Bold, color = t.ink)
+                            Text("برای دیدن تغییرات و دانلود لمس کنید", fontSize = 12.sp, color = t.mut)
+                        }
+                        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, null, tint = t.mut, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
             if (total == 0) {
                 Panel {
                     Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -218,6 +253,7 @@ fun HomeScreen(
                         Text("هنوز اطلاعاتی وارد نشده است", fontWeight = FontWeight.Bold, color = t.ink)
                         Text("برای شروع، فایل اکسل کالاها را وارد کنید یا اطلاعات را از موبایل دیگر دریافت کنید.", fontSize = 13.sp, color = t.mut, textAlign = TextAlign.Center)
                         PrimaryButton("ورود از اکسل", goImport, icon = Icons.Outlined.FileUpload)
+                        SecondaryButton("افزودن دستی کالا", goAdd, icon = Icons.Outlined.Add)
                     }
                 }
             }
@@ -312,7 +348,7 @@ private fun ItemRow(item: Item, onClick: () -> Unit) {
 fun ItemsScreen(
     store: Store, q: String, onQ: (String) -> Unit, status: Int, onStatus: (Int) -> Unit, sort: Int, onSort: (Int) -> Unit,
     cat: String?, onCat: (String?) -> Unit, form: String?, onForm: (String?) -> Unit,
-    onScan: () -> Unit, onOpen: (String) -> Unit
+    onScan: () -> Unit, onAdd: () -> Unit, onOpen: (String) -> Unit
 ) {
     val t = LocalTk.current
     var filter by remember { mutableStateOf(false) }
@@ -325,7 +361,7 @@ fun ItemsScreen(
         derivedStateOf {
             val list = store.items.filter {
                 (cat == null || it.category == cat) && (form == null || it.form == form) &&
-                    (key.isEmpty() || it.name.contains(key, true) || it.code.contains(key, true) || it.form.contains(key, true)) &&
+                    (key.isEmpty() || it.name.contains(key, true) || it.code.contains(key, true) || it.form.contains(key, true) || it.barcodes.any { b -> b.contains(key, true) }) &&
                     when (status) {
                         1 -> it.finalQty == null
                         2 -> it.finalQty != null
@@ -349,9 +385,12 @@ fun ItemsScreen(
     val badge = (if (cat != null) 1 else 0) + (if (form != null) 1 else 0) + (if (sort != 0) 1 else 0)
 
     Column(Modifier.fillMaxSize()) {
-        AppBar("کالاها", actions = { IconBtn(Icons.Outlined.FilterList, { filter = true }, badge = badge) })
+        AppBar("کالاها", actions = {
+            IconBtn(Icons.Outlined.Add, onAdd)
+            IconBtn(Icons.Outlined.FilterList, { filter = true }, badge = badge)
+        })
         Column(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SearchField(q, onQ, "جستجوی نام، کد یا شکل دارویی", onScan)
+            SearchField(q, onQ, "جستجوی نام، کد، بارکد یا شکل", onScan)
             Segmented(listOf("همه", "شمارش‌نشده", "شمارش‌شده", "مغایرت"), if (status == 4) 3 else status, onStatus)
             if (cat != null || form != null) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -363,7 +402,10 @@ fun ItemsScreen(
                 Text("${faI(shown.size)} قلم از ${faI(store.items.size)}", Modifier.weight(1f), fontSize = 12.sp, color = t.mut)
                 Text("مرتب‌سازی: ${SORT_OPTIONS[sort]}", fontSize = 12.sp, color = t.mut)
             }
-            if (store.items.isEmpty()) EmptyState(Icons.Outlined.Inventory2, "هنوز کالایی وارد نشده است.\nاز صفحه‌ی خانه «ورود اکسل» را بزنید.")
+            if (store.items.isEmpty()) {
+                EmptyState(Icons.Outlined.Inventory2, "هنوز کالایی وارد نشده است.\nاز اکسل وارد کنید یا کالا را دستی اضافه کنید.")
+                PrimaryButton("افزودن کالا", onAdd, icon = Icons.Outlined.Add)
+            }
             else if (shown.isEmpty()) EmptyState(Icons.Outlined.Search, "موردی پیدا نشد")
             else Box(Modifier.weight(1f)) {
                 Panel(Modifier.fillMaxSize()) {
@@ -461,9 +503,10 @@ fun ManageSheet(
 
 /* ------------------------------------------------------------------ settings */
 @Composable
-fun SettingsScreen(store: Store, goHistory: () -> Unit, goSend: () -> Unit, goReceive: () -> Unit, goImport: () -> Unit) {
+fun SettingsScreen(store: Store, goHistory: () -> Unit, goSend: () -> Unit, goReceive: () -> Unit, goImport: () -> Unit, onCheckUpdate: () -> Unit, onAddItem: () -> Unit) {
     val ctx = LocalContext.current
     val t = LocalTk.current
+    val ver = remember { Updater.installed(ctx).first }
     var confirm by remember { mutableStateOf(false) }
     var archive by remember { mutableStateOf(false) }
     var about by remember { mutableStateOf(false) }
@@ -482,6 +525,7 @@ fun SettingsScreen(store: Store, goHistory: () -> Unit, goSend: () -> Unit, goRe
             }
             SectionTitle("داده‌ها")
             Panel {
+                ListRow(Icons.Outlined.Add, "افزودن کالای جدید", "ثبت دستی با نام، کد و چند بارکد", onClick = onAddItem)
                 ListRow(Icons.Outlined.FileUpload, "ورود از اکسل", onClick = goImport)
                 ListRow(Icons.Outlined.Archive, "بایگانی دوره فعال", "ذخیره‌ی نتیجه‌ی شمارش", onClick = { archive = true })
                 ListRow(Icons.Outlined.History, "دوره‌های قبل", "${faI(store.periods.size)} دوره", divider = false, onClick = goHistory)
@@ -491,10 +535,15 @@ fun SettingsScreen(store: Store, goHistory: () -> Unit, goSend: () -> Unit, goRe
                 ListRow(Icons.Outlined.NorthEast, "ارسال اطلاعات", "با Wi‑Fi یا Hotspot", Tone.Ok, onClick = goSend)
                 ListRow(Icons.Outlined.SouthWest, "دریافت اطلاعات", null, Tone.Ok, divider = false, onClick = goReceive)
             }
+            SectionTitle("به‌روزرسانی")
+            Panel {
+                ListRow(Icons.Outlined.SystemUpdate, "بررسی نسخه‌ی جدید", "نسخه‌ی فعلی ${fa(ver)}", Tone.Ok, onClick = onCheckUpdate)
+                ListRow(Icons.Outlined.Link, "صفحه‌ی دانلود برنامه", "آخرین نسخه در GitHub", Tone.Neutral, divider = false, onClick = { Updater.open(ctx, RELEASES_PAGE) })
+            }
             SectionTitle("درباره")
             Panel {
                 ListRow(Icons.Outlined.Code, "توسعه‌دهنده", "حسین حسین‌زاده", Tone.Neutral, onClick = { about = true })
-                ListRow(Icons.Outlined.Info, "انبارگردانی", "نسخه ۱٫۰", Tone.Neutral, divider = false)
+                ListRow(Icons.Outlined.Info, "انبارگردانی", "نسخه ${fa(ver)}", Tone.Neutral, divider = false)
             }
             Spacer(Modifier.height(4.dp))
             DangerButton("پاک‌کردن همه شمارش‌ها", { confirm = true }, icon = Icons.Outlined.Delete)
@@ -539,7 +588,7 @@ fun SettingsScreen(store: Store, goHistory: () -> Unit, goSend: () -> Unit, goRe
         AppDialog({ about = false }, "توسعه‌دهنده") {
             Text("حسین حسین‌زاده", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = t.ink)
             Text("\u200EHzadeh007@gmail.com", color = t.pri, fontSize = 15.sp)
-            Text("انبارگردانی – مدیریت هوشمند انبار • نسخه ۱٫۰", fontSize = 12.sp, color = t.mut)
+            Text("انبارگردانی – مدیریت هوشمند انبار • نسخه ${fa(ver)}", fontSize = 12.sp, color = t.mut)
             PrimaryButton("ارسال ایمیل", {
                 try {
                     ctx.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:Hzadeh007@gmail.com")).putExtra(Intent.EXTRA_SUBJECT, "انبارگردانی – بازخورد"))
@@ -558,5 +607,57 @@ fun SettingsScreen(store: Store, goHistory: () -> Unit, goSend: () -> Unit, goRe
                 SecondaryButton("انصراف", { confirm = false }, Modifier.weight(1f))
             }
         }
+    }
+}
+
+@Composable
+fun UpdateDialog(info: UpdateInfo, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    val t = LocalTk.current
+    val main = remember { Handler(Looper.getMainLooper()) }
+    var state by remember { mutableIntStateOf(0) } // 0 = ready, 1 = downloading, 2 = downloaded, 3 = error
+    var pct by remember { mutableIntStateOf(0) }
+    var err by remember { mutableStateOf("") }
+    var file by remember { mutableStateOf<java.io.File?>(null) }
+    val cancel = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
+    fun start() {
+        state = 1; pct = 0; cancel.set(false)
+        Thread {
+            val r = Updater.download(ctx, info.downloadUrl, { p -> main.post { pct = p } }, { cancel.get() })
+            main.post {
+                val f = r.first
+                if (f != null) { file = f; state = 2; Updater.install(ctx, f) }
+                else if (cancel.get()) state = 0
+                else { err = r.second ?: "دانلود ناموفق بود"; state = 3 }
+            }
+        }.start()
+    }
+    fun close() { cancel.set(true); onClose() }
+
+    AppDialog({ close() }, "نسخه‌ی جدید موجود است") {
+        Text("نسخه ${fa(info.version)}", fontWeight = FontWeight.Bold, color = t.ink)
+        if (info.notes.isNotBlank()) Text(info.notes.trim().take(500), fontSize = 12.5.sp, color = t.mut)
+        when (state) {
+            1 -> {
+                Track(pct / 100f)
+                Text("در حال دانلود… ${faI(pct)}٪", fontSize = 12.5.sp, color = t.mut)
+                SecondaryButton("لغو دانلود", { cancel.set(true) })
+            }
+            2 -> {
+                StatusBanner(Tone.Ok, Icons.Outlined.CheckCircle, "دانلود کامل شد")
+                PrimaryButton("نصب نسخه‌ی جدید", { file?.let { Updater.install(ctx, it) } }, icon = Icons.Outlined.SystemUpdate)
+                Text("اگر پنجره‌ی نصب باز نشد، اجازه‌ی «نصب از این منبع» را بدهید و دوباره «نصب» را بزنید.", fontSize = 11.5.sp, color = t.mut)
+            }
+            3 -> {
+                StatusBanner(Tone.Bad, Icons.Outlined.Warning, err)
+                PrimaryButton("تلاش دوباره", { start() }, icon = Icons.Outlined.Refresh)
+            }
+            else -> {
+                if (info.hasApk) PrimaryButton("دانلود و نصب", { start() }, icon = Icons.Outlined.FileDownload)
+                SecondaryButton("صفحه‌ی دانلود", { Updater.open(ctx, info.pageUrl) })
+            }
+        }
+        GhostButton(if (state == 1) "بستن (دانلود لغو می‌شود)" else "بعداً", { close() }, Modifier.fillMaxWidth())
     }
 }

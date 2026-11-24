@@ -16,9 +16,16 @@ data class Item(
     val first: Double? = null,
     val second: Double? = null,
     val category: String = "",
-    val form: String = ""
+    val form: String = "",
+    /** Several barcodes per item are allowed; they are separate from the drug code. */
+    val barcodes: List<String> = emptyList(),
+    /** Stable internal key (never changes when code/name are edited). */
+    val id: String = "",
+    /** true = added by hand (kept when a new Excel file is imported). */
+    val manual: Boolean = false
 ) {
-    val key: String get() = if (code.isNotEmpty()) code else name
+    val bizKey: String get() = if (code.isNotEmpty()) code else name
+    val key: String get() = id.ifEmpty { bizKey }
     /** Recount (if entered) overrides the first count. */
     val finalQty: Double? get() = second ?: first
 }
@@ -119,17 +126,24 @@ class Store(private val file: File) {
             arr.put(
                 JSONObject().put("k", it.code).put("n", it.name).put("s", it.system)
                     .put("f", it.first ?: JSONObject.NULL).put("g", it.second ?: JSONObject.NULL).put("c", it.category).put("d", it.form)
+                    .put("b", JSONArray(it.barcodes)).put("i", it.key).put("m", it.manual)
             )
         }
         return arr
     }
 
-    private fun itemFrom(j: JSONObject) = Item(
-        j.optString("k", ""), j.getString("n"), j.getDouble("s"),
-        if (j.isNull("f")) null else j.getDouble("f"),
-        if (j.isNull("g")) null else j.getDouble("g"),
-        j.optString("c", ""), j.optString("d", "")
-    )
+    private fun itemFrom(j: JSONObject): Item {
+        val code = j.optString("k", "")
+        val name = j.getString("n")
+        val bs = j.optJSONArray("b")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+        return Item(
+            code, name, j.getDouble("s"),
+            if (j.isNull("f")) null else j.getDouble("f"),
+            if (j.isNull("g")) null else j.getDouble("g"),
+            j.optString("c", ""), j.optString("d", ""), bs,
+            j.optString("i", "").ifEmpty { code.ifEmpty { name } }, j.optBoolean("m", false)
+        )
+    }
 
     /** Saves a snapshot of the current stocktake. reset = start a new period (clears counts). */
     fun archive(label: String, reset: Boolean): Boolean {
@@ -167,15 +181,7 @@ class Store(private val file: File) {
             items.clear()
             o.optJSONArray("items")?.let {
                 for (i in 0 until it.length()) {
-                    val j = it.getJSONObject(i)
-                    items.add(
-                        Item(
-                            j.optString("k", ""), j.getString("n"), j.getDouble("s"),
-                            if (j.isNull("f")) null else j.getDouble("f"),
-                            if (j.isNull("g")) null else j.getDouble("g"),
-                            j.optString("c", ""), j.optString("d", "")
-                        )
-                    )
+                    items.add(itemFrom(it.getJSONObject(i)))
                 }
             }
         } catch (e: Exception) { /* ignore corrupted file */ }
@@ -221,15 +227,16 @@ class Store(private val file: File) {
             warehouse = o.optString("w", warehouse)
             n = incoming.size
         } else {
-            val idx = items.indices.associateBy { items[it].key }
+            val idx = items.indices.associateBy { items[it].bizKey }
             for (inc in incoming) {
-                val i = idx[inc.key]
-                if (i == null) { items.add(inc); n++ }
+                val i = idx[inc.bizKey]
+                if (i == null) { items.add(inc.copy(id = uniqueId(inc.key))); n++ }
                 else {
                     val cur = items[i]
                     val upd = cur.copy(
                         first = inc.first ?: cur.first, second = inc.second ?: cur.second,
-                        category = cur.category.ifEmpty { inc.category }, form = cur.form.ifEmpty { inc.form }
+                        category = cur.category.ifEmpty { inc.category }, form = cur.form.ifEmpty { inc.form },
+                        barcodes = (cur.barcodes + inc.barcodes).distinct()
                     )
                     if (upd != cur) { items[i] = upd; n++ }
                 }
@@ -250,18 +257,67 @@ class Store(private val file: File) {
     fun setCount(key: String, stage: Int, v: Double?) = upd(key) { if (stage == 1) it.copy(first = v) else it.copy(second = v) }
     fun setCategory(key: String, c: String) = upd(key) { it.copy(category = c) }
 
-    /** Finds an item by scanned barcode: exact code, case-insensitive, name, then ignoring leading zeros (UPC-A vs EAN-13). */
+    /** Finds an item by a scanned barcode: any of its barcodes, then the drug code, then the name; digits-only values ignore leading zeros (UPC-A vs EAN-13). */
     fun findByCode(raw: String): Item? {
         val c = latin(raw.trim())
         if (c.isEmpty()) return null
-        items.firstOrNull { it.code == c }?.let { return it }
+        items.firstOrNull { it.barcodes.any { b -> b.equals(c, ignoreCase = true) } }?.let { return it }
         items.firstOrNull { it.code.isNotEmpty() && it.code.equals(c, ignoreCase = true) }?.let { return it }
         items.firstOrNull { it.name == c }?.let { return it }
         val z = c.trimStart('0')
         if (z.isNotEmpty() && c.all { it.isDigit() }) {
+            items.firstOrNull { it.barcodes.any { b -> b.all { ch -> ch.isDigit() } && b.trimStart('0') == z } }?.let { return it }
             items.firstOrNull { it.code.isNotEmpty() && it.code.all { ch -> ch.isDigit() } && it.code.trimStart('0') == z }?.let { return it }
         }
         return null
+    }
+
+    private fun uniqueId(base: String): String {
+        var id = base
+        var n = 2
+        while (items.any { it.key == id }) { id = "$base#$n"; n++ }
+        return id
+    }
+
+    /** Returns an error message if the item clashes with another one (same code or same barcode), else null. */
+    fun checkItem(item: Item, ignoreKey: String?): String? {
+        if (item.name.isBlank()) return "نام کالا را وارد کنید"
+        val others = items.filter { o -> o.key != ignoreKey }
+        if (item.code.isNotEmpty()) {
+            others.firstOrNull { o -> o.code == item.code }?.let { o -> return "کد «${item.code}» قبلاً برای «${o.name}» ثبت شده است" }
+        } else if (others.any { o -> o.code.isEmpty() && o.name == item.name }) {
+            return "کالایی با همین نام (و بدون کد) وجود دارد"
+        }
+        for (b in item.barcodes) {
+            others.firstOrNull { o -> b in o.barcodes }?.let { o -> return "بارکد $b قبلاً برای «${o.name}» ثبت شده است" }
+        }
+        return null
+    }
+
+    /** Adds an item by hand. Returns an error message or null on success. */
+    fun addItem(item: Item): String? {
+        val clean = item.copy(name = item.name.trim(), code = item.code.trim(), barcodes = item.barcodes.distinct())
+        checkItem(clean, null)?.let { return it }
+        items.add(0, clean.copy(id = uniqueId(clean.bizKey), manual = true))
+        epoch++
+        save()
+        return null
+    }
+
+    fun updateItem(key: String, item: Item): String? {
+        val i = items.indexOfFirst { it.key == key }
+        if (i < 0) return "کالا پیدا نشد"
+        val clean = item.copy(name = item.name.trim(), code = item.code.trim(), barcodes = item.barcodes.distinct(), id = key)
+        checkItem(clean, key)?.let { return it }
+        items[i] = clean.copy(manual = items[i].manual)
+        save()
+        return null
+    }
+
+    fun deleteItem(key: String) {
+        items.removeAll { it.key == key }
+        epoch++
+        save()
     }
 
     fun addCategory(c: String) {
@@ -318,40 +374,50 @@ class Store(private val file: File) {
     fun importRows(rows: List<List<String>>): Int {
         if (rows.isEmpty()) return 0
         val h = rows[0].map { it.trim().lowercase() }
-        fun find(vararg keys: String) = h.indexOfFirst { c -> keys.any { c.contains(it) } }
-        var fi = find("شکل", "form", "dosage")
-        var ni = find("نام", "name")
-        if (ni < 0) ni = h.indices.firstOrNull { it != fi && (h[it].contains("کالا") || h[it].contains("دارو")) } ?: -1
-        var si = find("موجودی", "stock", "qty", "تعداد")
-        var ci = find("دسته", "category", "group")
-        var ki = find("کد", "code", "بارکد", "barcode")
+        val isBar = { c: String -> c.contains("بارکد") || c.contains("barcode") || c.contains("gtin") || c.contains("ean") }
+        var bi = h.indexOfFirst(isBar)
+        var fi = h.indexOfFirst { it.contains("شکل") || it.contains("form") || it.contains("dosage") }
+        var ni = h.indexOfFirst { it.contains("نام") || it.contains("name") }
+        if (ni < 0) ni = h.indices.firstOrNull { it != fi && it != bi && (h[it].contains("کالا") || h[it].contains("دارو")) } ?: -1
+        var si = h.indexOfFirst { it.contains("موجودی") || it.contains("stock") || it.contains("qty") || it.contains("تعداد") }
+        var ci = h.indexOfFirst { it.contains("دسته") || it.contains("category") || it.contains("group") }
+        var ki = h.indexOfFirst { !isBar(it) && (it.contains("کد") || it.contains("code")) }
         val hasHeader = ni >= 0 && si >= 0 && ni != si
         if (!hasHeader) {
-            ci = -1; fi = -1
+            ci = -1; fi = -1; bi = -1
             if (rows[0].size >= 3) { ki = 0; ni = 1; si = 2 } else { ki = -1; ni = 0; si = 1 }
         }
         val data = if (hasHeader) rows.drop(1) else rows
-        val old = items.associateBy { it.key }
+        val old = items.associateBy { it.bizKey }
         val map = LinkedHashMap<String, Item>()
         for (r in data) {
             val name = r.getOrNull(ni)?.trim().orEmpty()
             if (name.isEmpty()) continue
             val code = if (ki >= 0) normCode(r.getOrNull(ki).orEmpty()) else ""
+            val bars = if (bi >= 0) splitBarcodes(r.getOrNull(bi).orEmpty()) else emptyList()
             val s = num(r.getOrNull(si).orEmpty()) ?: 0.0
             val fc = if (ci >= 0) r.getOrNull(ci)?.trim().orEmpty() else ""
             val ff = if (fi >= 0) r.getOrNull(fi)?.trim().orEmpty() else ""
             val key = if (code.isNotEmpty()) code else name
             val e = map[key]
-            map[key] = if (e != null) e.copy(system = e.system + s)
-            else {
+            map[key] = if (e != null) {
+                e.copy(
+                    system = e.system + s, barcodes = (e.barcodes + bars).distinct(),
+                    category = e.category.ifEmpty { fc }, form = e.form.ifEmpty { ff }
+                )
+            } else {
                 val o = old[key]
                 Item(
-                    code, name, s, o?.first, o?.second,
-                    if (fc.isNotEmpty()) fc else o?.category ?: "",
-                    if (ff.isNotEmpty()) ff else o?.form ?: ""
+                    code = code, name = name, system = s, first = o?.first, second = o?.second,
+                    category = if (fc.isNotEmpty()) fc else o?.category ?: "",
+                    form = if (ff.isNotEmpty()) ff else o?.form ?: "",
+                    barcodes = (bars + (o?.barcodes ?: emptyList())).distinct(),
+                    id = o?.key ?: key, manual = false
                 )
             }
         }
+        // items added by hand and not present in the new file are kept
+        for (o in items) if (o.manual && o.bizKey !in map) map[o.bizKey] = o
         map.values.map { it.category }.filter { it.isNotEmpty() && it !in categories }.distinct().forEach { categories.add(it) }
         map.values.map { it.form }.filter { it.isNotEmpty() && it !in forms }.distinct().forEach { forms.add(it) }
         items.clear()
@@ -361,3 +427,7 @@ class Store(private val file: File) {
         return map.size
     }
 }
+
+/** A cell may hold several barcodes separated by spaces, new lines, commas or semicolons. */
+fun splitBarcodes(raw: String): List<String> =
+    raw.split(Regex("[\\s,،;؛/|]+")).map { normCode(it) }.filter { it.isNotEmpty() }.distinct()
